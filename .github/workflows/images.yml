@@ -29,24 +29,30 @@ jobs:
           - variant: stock
             dockerfile: images/stock/Dockerfile
             image: ghcr.io/thystra/jellyfin-hardened
-            tags: |
-              ghcr.io/thystra/jellyfin-hardened:10.11.11-awsec1
-              ghcr.io/thystra/jellyfin-hardened:10.11-awsec1
-              ghcr.io/thystra/jellyfin-hardened:cve-2026-8461
+            tags: ghcr.io/thystra/jellyfin-hardened:10.11.11-awsec1
             pgsql: 'false'
+            pg_major: 'none'
             oci_title: Hardened Jellyfin
             oci_description: Jellyfin 10.11.11 with the awsec1 FFmpeg security fix for CVE-2026-8461
             oci_version: 10.11.11-awsec1
-          - variant: pgsql
+          - variant: pg17
             dockerfile: images/pgsql/Dockerfile
             image: ghcr.io/thystra/jellyfin-pgsql-hardened
-            tags: |
-              ghcr.io/thystra/jellyfin-pgsql-hardened:awsec1-pg18
-              ghcr.io/thystra/jellyfin-pgsql-hardened:cve-2026-8461-pg18
+            tags: ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg17
             pgsql: 'true'
+            pg_major: '17'
             oci_title: Hardened Jellyfin PostgreSQL
-            oci_description: Jellyfin PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 18 client tools
-            oci_version: awsec1-pg18
+            oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 17 client tools
+            oci_version: 10.11.11-awsec1-pg17
+          - variant: pg18
+            dockerfile: images/pgsql/Dockerfile
+            image: ghcr.io/thystra/jellyfin-pgsql-hardened
+            tags: ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg18
+            pgsql: 'true'
+            pg_major: '18'
+            oci_title: Hardened Jellyfin PostgreSQL
+            oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 18 client tools
+            oci_version: 10.11.11-awsec1-pg18
 
     steps:
       - name: Checkout
@@ -66,8 +72,18 @@ jobs:
           tags: local/hardened-jellyfin:${{ matrix.variant }}
           build-args: |
             GIT_REVISION=${{ github.sha }}
+            PG_MAJOR=${{ matrix.pg_major }}
+            OCI_VERSION=${{ matrix.oci_version }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+      - name: Qualify Jellyfin version
+        env:
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+        run: |
+          set -euxo pipefail
+          docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version | tee /tmp/jellyfin-version
+          grep -F '10.11.11' /tmp/jellyfin-version
 
       - name: Qualify hardened FFmpeg
         env:
@@ -139,14 +155,67 @@ jobs:
         if: matrix.pgsql == 'true'
         env:
           IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          PG_MAJOR: ${{ matrix.pg_major }}
         run: |
           set -euxo pipefail
-          docker run --rm --entrypoint /bin/sh "$IMAGE" -c '
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c "
             set -eu
-            command -v pg_dump
-            pg_dump --version | grep -E "PostgreSQL\) 18([. ]|$)"
-            test "$(command -v pg_dump)" = "/usr/lib/postgresql/18/bin/pg_dump"
-          '
+            test \"\$(command -v pg_dump)\" = \"/usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump\"
+            test \"\$(command -v pg_restore)\" = \"/usr/lib/postgresql/${PG_MAJOR}/bin/pg_restore\"
+            test \"\$(command -v psql)\" = \"/usr/lib/postgresql/${PG_MAJOR}/bin/psql\"
+            pg_dump --version | grep -E 'PostgreSQL\\) ${PG_MAJOR}([. ]|$)'
+            pg_restore --version | grep -E 'PostgreSQL\\) ${PG_MAJOR}([. ]|$)'
+            psql --version | grep -E 'PostgreSQL\\) ${PG_MAJOR}([. ]|$)'
+          "
+
+      - name: PostgreSQL dump and restore smoke test
+        if: matrix.pgsql == 'true'
+        env:
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          PG_MAJOR: ${{ matrix.pg_major }}
+        run: |
+          set -euxo pipefail
+
+          NETWORK="pg-smoke-${{ matrix.variant }}-${{ github.run_id }}"
+          SERVER="pg-smoke-${{ matrix.variant }}-${{ github.run_id }}"
+          cleanup() {
+            docker rm -f "$SERVER" >/dev/null 2>&1 || true
+            docker network rm "$NETWORK" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker network create "$NETWORK"
+          docker run -d \
+            --name "$SERVER" \
+            --network "$NETWORK" \
+            -e POSTGRES_PASSWORD=ci-password \
+            -e POSTGRES_DB=source_db \
+            "postgres:${PG_MAJOR}-bookworm"
+
+          for _ in $(seq 1 45); do
+            if docker exec "$SERVER" pg_isready -U postgres -d source_db; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$SERVER" pg_isready -U postgres -d source_db
+
+          docker exec "$SERVER" psql -U postgres -d source_db -v ON_ERROR_STOP=1 \
+            -c 'CREATE TABLE smoke_test (id integer PRIMARY KEY, value text NOT NULL);' \
+            -c "INSERT INTO smoke_test VALUES (1, 'alpha'), (2, 'beta');"
+
+          docker run --rm \
+            --network "$NETWORK" \
+            --entrypoint /bin/sh \
+            -e PGPASSWORD=ci-password \
+            "$IMAGE" -c "
+              set -eux
+              pg_dump -h '$SERVER' -U postgres -d source_db -Fc -f /tmp/source.dump
+              createdb -h '$SERVER' -U postgres restored_db
+              pg_restore -h '$SERVER' -U postgres -d restored_db --exit-on-error /tmp/source.dump
+              test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT count(*) FROM smoke_test;')\" = 2
+              test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT value FROM smoke_test WHERE id=2;')\" = beta
+            "
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -168,6 +237,8 @@ jobs:
           tags: ${{ matrix.tags }}
           build-args: |
             GIT_REVISION=${{ github.sha }}
+            PG_MAJOR=${{ matrix.pg_major }}
+            OCI_VERSION=${{ matrix.oci_version }}
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=${{ matrix.variant }}
