@@ -25,9 +25,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
         include:
           - variant: stock
+            arch: amd64
             dockerfile: images/stock/Dockerfile
             pgsql: 'false'
             pg_major: 'none'
@@ -35,6 +35,7 @@ jobs:
             oci_description: Jellyfin 10.11.11 with the awsec1 FFmpeg security fix for CVE-2026-8461
             oci_version: 10.11.11-awsec1
           - variant: pg17
+            arch: amd64
             dockerfile: images/pgsql/Dockerfile
             pgsql: 'true'
             pg_major: '17'
@@ -42,6 +43,31 @@ jobs:
             oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 17 client tools
             oci_version: 10.11.11-awsec1-pg17
           - variant: pg18
+            arch: amd64
+            dockerfile: images/pgsql/Dockerfile
+            pgsql: 'true'
+            pg_major: '18'
+            oci_title: Hardened Jellyfin PostgreSQL
+            oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 18 client tools
+            oci_version: 10.11.11-awsec1-pg18
+          - variant: stock
+            arch: arm64
+            dockerfile: images/stock/Dockerfile
+            pgsql: 'false'
+            pg_major: 'none'
+            oci_title: Hardened Jellyfin
+            oci_description: Jellyfin 10.11.11 with the awsec1 FFmpeg security fix for CVE-2026-8461
+            oci_version: 10.11.11-awsec1
+          - variant: pg17
+            arch: arm64
+            dockerfile: images/pgsql/Dockerfile
+            pgsql: 'true'
+            pg_major: '17'
+            oci_title: Hardened Jellyfin PostgreSQL
+            oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 17 client tools
+            oci_version: 10.11.11-awsec1-pg17
+          - variant: pg18
+            arch: arm64
             dockerfile: images/pgsql/Dockerfile
             pgsql: 'true'
             pg_major: '18'
@@ -93,10 +119,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euxo pipefail
-
           docker run --rm --platform "linux/${ARCH}" --entrypoint /bin/sh "$IMAGE" -c "
             set -eu
-
             FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
             test -x \"\$FFMPEG\"
 
@@ -130,13 +154,7 @@ jobs:
             fi
 
             echo '===== ENCODE TEST ====='
-            \"\$FFMPEG\" \
-              -hide_banner \
-              -f lavfi \
-              -i 'testsrc=size=320x180:rate=15' \
-              -t 1 \
-              -c:v libx264 \
-              -f null -
+            \"\$FFMPEG\" -hide_banner -f lavfi -i 'testsrc=size=320x180:rate=15' -t 1 -c:v libx264 -f null -
           "
 
       - name: Qualify OCI metadata
@@ -186,7 +204,6 @@ jobs:
           PG_MAJOR: ${{ matrix.pg_major }}
         run: |
           set -euxo pipefail
-
           NETWORK="pg-smoke-${{ matrix.variant }}-${{ matrix.arch }}-${{ github.run_id }}"
           SERVER="pg-smoke-${{ matrix.variant }}-${{ matrix.arch }}-${{ github.run_id }}"
           cleanup() {
@@ -196,38 +213,24 @@ jobs:
           trap cleanup EXIT
 
           docker network create "$NETWORK"
-          docker run -d \
-            --name "$SERVER" \
-            --network "$NETWORK" \
-            -e POSTGRES_PASSWORD=ci-password \
-            -e POSTGRES_DB=source_db \
-            "postgres:${PG_MAJOR}-bookworm"
-
+          docker run -d --name "$SERVER" --network "$NETWORK" -e POSTGRES_PASSWORD=ci-password -e POSTGRES_DB=source_db "postgres:${PG_MAJOR}-bookworm"
           for _ in $(seq 1 45); do
-            if docker exec "$SERVER" pg_isready -U postgres -d source_db; then
-              break
-            fi
+            if docker exec "$SERVER" pg_isready -U postgres -d source_db; then break; fi
             sleep 1
           done
           docker exec "$SERVER" pg_isready -U postgres -d source_db
-
           docker exec "$SERVER" psql -U postgres -d source_db -v ON_ERROR_STOP=1 \
             -c 'CREATE TABLE smoke_test (id integer PRIMARY KEY, value text NOT NULL);' \
             -c "INSERT INTO smoke_test VALUES (1, 'alpha'), (2, 'beta');"
 
-          docker run --rm \
-            --platform "linux/${ARCH}" \
-            --network "$NETWORK" \
-            --entrypoint /bin/sh \
-            -e PGPASSWORD=ci-password \
-            "$IMAGE" -c "
-              set -eux
-              pg_dump -h '$SERVER' -U postgres -d source_db -Fc -f /tmp/source.dump
-              createdb -h '$SERVER' -U postgres restored_db
-              pg_restore -h '$SERVER' -U postgres -d restored_db --exit-on-error /tmp/source.dump
-              test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT count(*) FROM smoke_test;')\" = 2
-              test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT value FROM smoke_test WHERE id=2;')\" = beta
-            "
+          docker run --rm --platform "linux/${ARCH}" --network "$NETWORK" --entrypoint /bin/sh -e PGPASSWORD=ci-password "$IMAGE" -c "
+            set -eux
+            pg_dump -h '$SERVER' -U postgres -d source_db -Fc -f /tmp/source.dump
+            createdb -h '$SERVER' -U postgres restored_db
+            pg_restore -h '$SERVER' -U postgres -d restored_db --exit-on-error /tmp/source.dump
+            test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT count(*) FROM smoke_test;')\" = 2
+            test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT value FROM smoke_test WHERE id=2;')\" = beta
+          "
 
   publish:
     name: publish-${{ matrix.variant }}
@@ -261,22 +264,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Publish qualified multi-platform image
         id: publish
         uses: docker/build-push-action@v6
@@ -296,7 +295,6 @@ jobs:
             type=gha,scope=${{ matrix.variant }}-amd64
             type=gha,scope=${{ matrix.variant }}-arm64
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-publish
-
       - name: Attest image provenance
         uses: actions/attest-build-provenance@v3
         with:
