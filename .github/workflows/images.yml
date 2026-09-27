@@ -214,12 +214,23 @@ jobs:
 
           docker network create "$NETWORK"
           docker run -d --name "$SERVER" --network "$NETWORK" -e POSTGRES_PASSWORD=ci-password -e POSTGRES_DB=source_db "postgres:${PG_MAJOR}-bookworm"
-          for _ in $(seq 1 45); do
-            if docker exec "$SERVER" pg_isready -U postgres -d source_db; then break; fi
+
+          ready_count=0
+          for _ in $(seq 1 60); do
+            if docker exec "$SERVER" pg_isready -h 127.0.0.1 -U postgres -d source_db; then
+              ready_count=$((ready_count + 1))
+              if [ "$ready_count" -ge 3 ]; then
+                break
+              fi
+            else
+              ready_count=0
+            fi
             sleep 1
           done
-          docker exec "$SERVER" pg_isready -U postgres -d source_db
-          docker exec "$SERVER" psql -U postgres -d source_db -v ON_ERROR_STOP=1 \
+          test "$ready_count" -ge 3
+          docker exec -e PGPASSWORD=ci-password "$SERVER" psql -h 127.0.0.1 -U postgres -d source_db -v ON_ERROR_STOP=1 -Atc 'SELECT 1;' | grep -Fx '1'
+
+          docker exec -e PGPASSWORD=ci-password "$SERVER" psql -h 127.0.0.1 -U postgres -d source_db -v ON_ERROR_STOP=1 \
             -c 'CREATE TABLE smoke_test (id integer PRIMARY KEY, value text NOT NULL);' \
             -c "INSERT INTO smoke_test VALUES (1, 'alpha'), (2, 'beta');"
 
