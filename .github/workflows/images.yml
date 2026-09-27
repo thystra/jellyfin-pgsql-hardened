@@ -34,6 +34,9 @@ jobs:
               ghcr.io/thystra/jellyfin-hardened:10.11-awsec1
               ghcr.io/thystra/jellyfin-hardened:cve-2026-8461
             pgsql: 'false'
+            oci_title: Hardened Jellyfin
+            oci_description: Jellyfin 10.11.11 with the awsec1 FFmpeg security fix for CVE-2026-8461
+            oci_version: 10.11.11-awsec1
           - variant: pgsql
             dockerfile: images/pgsql/Dockerfile
             image: ghcr.io/thystra/jellyfin-pgsql-hardened
@@ -41,6 +44,9 @@ jobs:
               ghcr.io/thystra/jellyfin-pgsql-hardened:awsec1-pg18
               ghcr.io/thystra/jellyfin-pgsql-hardened:cve-2026-8461-pg18
             pgsql: 'true'
+            oci_title: Hardened Jellyfin PostgreSQL
+            oci_description: Jellyfin PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 18 client tools
+            oci_version: awsec1-pg18
 
     steps:
       - name: Checkout
@@ -58,6 +64,8 @@ jobs:
           load: true
           push: false
           tags: local/hardened-jellyfin:${{ matrix.variant }}
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
@@ -104,6 +112,29 @@ jobs:
               -f null -
           '
 
+      - name: Qualify OCI metadata
+        env:
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          EXPECTED_SOURCE: https://github.com/thystra/jellyfin-security-images
+          EXPECTED_DOCUMENTATION: https://github.com/thystra/jellyfin-security-images/blob/main/README.md
+          EXPECTED_TITLE: ${{ matrix.oci_title }}
+          EXPECTED_DESCRIPTION: ${{ matrix.oci_description }}
+          EXPECTED_VERSION: ${{ matrix.oci_version }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euxo pipefail
+
+          LABELS="$(docker image inspect "$IMAGE" | jq -c '.[0].Config.Labels')"
+          printf '%s\n' "$LABELS" | jq .
+
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.source"')" = "$EXPECTED_SOURCE"
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.url"')" = "$EXPECTED_SOURCE"
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.documentation"')" = "$EXPECTED_DOCUMENTATION"
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.title"')" = "$EXPECTED_TITLE"
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.description"')" = "$EXPECTED_DESCRIPTION"
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.version"')" = "$EXPECTED_VERSION"
+          test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.revision"')" = "$EXPECTED_REVISION"
+
       - name: Qualify PostgreSQL client
         if: matrix.pgsql == 'true'
         env:
@@ -135,6 +166,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ matrix.tags }}
+          build-args: |
+            GIT_REVISION=${{ github.sha }}
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=${{ matrix.variant }}

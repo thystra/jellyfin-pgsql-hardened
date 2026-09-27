@@ -2,7 +2,7 @@
 
 Security-maintained Jellyfin container variants built from pinned upstream images and qualified in CI.
 
-The repository began as `jellyfin-pgsql-hardened`, but now carries both a stock Jellyfin variant and the PostgreSQL variant. A future repository rename to `jellyfin-security-images` or `jellyfin-hardened-images` would better match that scope; the published GHCR image names remain separate.
+The repository began as `jellyfin-pgsql-hardened` and was renamed to `jellyfin-security-images` as its scope expanded to include both a stock Jellyfin variant and the PostgreSQL variant. The published GHCR image names remain separate by variant.
 
 ## Current security fix
 
@@ -39,6 +39,10 @@ The current hardened FFmpeg package is qualified for `linux/amd64` and Jellyfin 
 
 There is deliberately no `latest` tag. Upstream Jellyfin has moved beyond 10.11.x, and a moving `latest` tag would incorrectly imply that the current hardened FFmpeg package had been qualified against newer Jellyfin major versions.
 
+## OCI image metadata
+
+Published derivatives override inherited OCI identity labels so consumers can identify this repository as the source of the hardened image. Labels include the source and documentation URLs, image title and description, security-build version, and the exact repository commit used for the build.
+
 ## CI qualification
 
 Every image build must verify that:
@@ -48,6 +52,7 @@ Every image build must verify that:
 - the MagicYUV decoder is absent;
 - CUDA, VAAPI, QSV, DRM, OpenCL, and Vulkan hardware-acceleration interfaces remain present;
 - a real libx264 encode succeeds;
+- OCI source, documentation, title, description, version, and revision labels match the expected build metadata;
 - for the PostgreSQL variant, `pg_dump` resolves to the PostgreSQL 18 client.
 
 Pull requests build and qualify without publishing. Pushes to `main` publish qualified images to GHCR with SBOM and build provenance attestations.
