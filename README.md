@@ -6,7 +6,7 @@ The repository publishes a small set of explicit, versioned images. Each tag ide
 
 ## Which image should I use?
 
-For standard Jellyfin 10.11.11 on `linux/amd64`:
+For standard Jellyfin 10.11.11 on `linux/amd64` or `linux/arm64`:
 
 ```text
 ghcr.io/thystra/jellyfin-hardened:10.11.11-awsec1
@@ -24,6 +24,8 @@ For Jellyfin 10.11.11 with PostgreSQL 18 client tools:
 ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg18
 ```
 
+All three tags are OCI multi-platform images for `linux/amd64` and `linux/arm64`; Docker or Podman selects the matching platform automatically.
+
 The PostgreSQL variants use the same hardened FFmpeg build as the stock image. Their PostgreSQL client version is selected explicitly so Jellyfin.Pgsql backup and restore subprocesses use the requested `pg_dump`, `pg_restore`, and `psql` major version.
 
 ## Security patch levels
@@ -39,17 +41,15 @@ Future security rebuilds will increment the patch level (`awsec2`, `awsec3`, and
 
 ## Upstream bases
 
-The stock image is based on the upstream `ghcr.io/jellyfin/jellyfin` 10.11.11 image pinned by digest.
+The stock image is based on the upstream `ghcr.io/jellyfin/jellyfin` 10.11.11 multi-platform image index pinned by digest. That index resolves to Jellyfin's platform-specific 10.11.11 images for amd64 and arm64.
 
-The PostgreSQL variants are based on the previously qualified `ghcr.io/rogly-net/jellyfin-postgresql` image pinned by digest, with the requested PostgreSQL client major selected in the derivative image.
+The PostgreSQL variants are based on the previously qualified `ghcr.io/rogly-net/jellyfin-postgresql` multi-platform image pinned by digest, with the requested PostgreSQL client major selected in the derivative image.
 
 ## Architecture policy
 
-The current AWSEC1 Jellyfin FFmpeg package is qualified for `linux/amd64`, so the current images are published for amd64 only.
+AWSEC1 is built and qualified for both `linux/amd64` and `linux/arm64`. Architecture is intentionally not encoded in the image tag; each release tag is a multi-platform OCI image.
 
-Architecture is intentionally not encoded in the image tag. Once the same security patch level is built and qualified for another architecture, the existing release tag can become an OCI multi-platform image and Docker/Podman can select the correct architecture automatically.
-
-`linux/arm64` is the next architecture target. It will not be added to an AWSEC tag until the hardened FFmpeg package and the complete image qualification suite pass for arm64.
+The architecture-specific hardened FFmpeg packages are selected during the image build and verified by SHA-256. CI also verifies that the installed Debian package architecture matches the target platform.
 
 There is deliberately no `latest` tag. A moving `latest` tag would imply qualification against Jellyfin releases that this repository has not tested.
 
@@ -59,15 +59,16 @@ Published derivatives override inherited OCI identity labels so consumers can id
 
 ## CI qualification
 
-Pull requests build and qualify every image without publishing. Pushes to `main` publish only images that pass the qualification suite to GHCR with SBOM and build provenance attestations.
+Pull requests build and qualify every image and architecture without publishing. Pushes to `main` publish only after all six variant/platform combinations pass. The publish job then creates multi-platform GHCR images with SBOM and build provenance attestations.
 
 The current CI verifies:
 
-- Jellyfin reports version 10.11.11;
-- the exact `jellyfin-ffmpeg7` 7.1.4-3+awsec1 package is installed;
+- Jellyfin reports version 10.11.11 on amd64 and arm64;
+- the exact `jellyfin-ffmpeg7` 7.1.4-3+awsec1 package is installed for the target architecture;
 - FFmpeg reports Jellyfin 7.1.4;
 - the MagicYUV decoder is absent;
-- CUDA, VAAPI, QSV, DRM, OpenCL, and Vulkan hardware-acceleration interfaces remain present;
+- expected hardware-acceleration interfaces remain present for each architecture;
+- the arm64 build retains the Rockchip MPP H.264 decoder;
 - a real libx264 encode succeeds;
 - OCI source, documentation, title, description, version, and revision labels match the expected build metadata;
 - PostgreSQL variants select the requested `pg_dump`, `pg_restore`, and `psql` major version;
