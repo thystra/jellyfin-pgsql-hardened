@@ -74,7 +74,8 @@ jobs:
             test -x "$FFMPEG"
 
             echo "===== PACKAGE ====="
-            dpkg-query -W -f="${Package} ${Version} ${Architecture}\n" jellyfin-ffmpeg7
+            dpkg-query -W -f="\${Package} \${Version} \${Architecture}\n" jellyfin-ffmpeg7
+            test "$(dpkg-query -W -f="\${Version}" jellyfin-ffmpeg7)" = "7.1.4-3+awsec1-trixie"
 
             echo "===== VERSION ====="
             "$FFMPEG" -version | head -1 | grep -F "7.1.4-Jellyfin"
