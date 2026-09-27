@@ -1,6 +1,4 @@
-# Compatibility Dockerfile for the PostgreSQL variant.
-# New automation builds images/pgsql/Dockerfile; keep this entry point for
-# existing users cloning the repository and running `docker build .`.
+# syntax=docker/dockerfile:1
 
 FROM ghcr.io/rogly-net/jellyfin-postgresql@sha256:944e277c10b4f0a5fc9748736a9e170cf28b9fba81f148a20fc6414f2eda1013
 
@@ -19,4 +17,6 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
+# Ensure Jellyfin.Pgsql backup/restore subprocesses select PG18 tools rather
+# than the PG17 client also present in the upstream image.
 ENV PATH="/usr/lib/postgresql/18/bin:${PATH}"

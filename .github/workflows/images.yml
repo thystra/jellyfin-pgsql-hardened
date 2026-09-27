@@ -1,0 +1,149 @@
+name: Hardened Jellyfin images
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-qualify-publish:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: stock
+            dockerfile: images/stock/Dockerfile
+            image: ghcr.io/thystra/jellyfin-hardened
+            tags: |
+              ghcr.io/thystra/jellyfin-hardened:10.11.11-awsec1
+              ghcr.io/thystra/jellyfin-hardened:10.11-awsec1
+              ghcr.io/thystra/jellyfin-hardened:cve-2026-8461
+            pgsql: 'false'
+          - variant: pgsql
+            dockerfile: images/pgsql/Dockerfile
+            image: ghcr.io/thystra/jellyfin-pgsql-hardened
+            tags: |
+              ghcr.io/thystra/jellyfin-pgsql-hardened:awsec1-pg18
+              ghcr.io/thystra/jellyfin-pgsql-hardened:cve-2026-8461-pg18
+            pgsql: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build qualification image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: local/hardened-jellyfin:${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+      - name: Qualify hardened FFmpeg
+        env:
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+        run: |
+          set -euxo pipefail
+
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c '
+            set -eu
+
+            FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
+            test -x "$FFMPEG"
+
+            echo "===== PACKAGE ====="
+            dpkg-query -W -f="\${Package} \${Version} \${Architecture}\n" jellyfin-ffmpeg7
+            test "$(dpkg-query -W -f="\${Version}" jellyfin-ffmpeg7)" = "7.1.4-3+awsec1-trixie"
+
+            echo "===== VERSION ====="
+            "$FFMPEG" -version | head -1 | grep -F "7.1.4-Jellyfin"
+
+            echo "===== MAGICYUV ====="
+            if "$FFMPEG" -hide_banner -decoders 2>/dev/null | grep -qi magicyuv; then
+              echo "FAIL: MagicYUV decoder present"
+              exit 1
+            fi
+            echo "PASS: MagicYUV decoder absent"
+
+            echo "===== HWACCELS ====="
+            HW="$($FFMPEG -hide_banner -hwaccels 2>/dev/null)"
+            printf "%s\n" "$HW"
+            for accel in cuda vaapi qsv drm opencl vulkan; do
+              printf "%s\n" "$HW" | grep -qx "$accel"
+            done
+
+            echo "===== ENCODE TEST ====="
+            "$FFMPEG" \
+              -hide_banner \
+              -f lavfi \
+              -i "testsrc=size=320x180:rate=15" \
+              -t 1 \
+              -c:v libx264 \
+              -f null -
+          '
+
+      - name: Qualify PostgreSQL client
+        if: matrix.pgsql == 'true'
+        env:
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+        run: |
+          set -euxo pipefail
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c '
+            set -eu
+            command -v pg_dump
+            pg_dump --version | grep -E "PostgreSQL\) 18([. ]|$)"
+            test "$(command -v pg_dump)" = "/usr/lib/postgresql/18/bin/pg_dump"
+          '
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish qualified image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ matrix.tags }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+      - name: Attest image provenance
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ matrix.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
