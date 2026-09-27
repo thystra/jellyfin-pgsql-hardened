@@ -18,36 +18,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-qualify-publish:
-    name: ${{ matrix.variant }}
+  qualify:
+    name: ${{ matrix.variant }}-${{ matrix.arch }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - variant: stock
+            arch: amd64
             dockerfile: images/stock/Dockerfile
-            image: ghcr.io/thystra/jellyfin-hardened
-            tags: ghcr.io/thystra/jellyfin-hardened:10.11.11-awsec1
             pgsql: 'false'
             pg_major: 'none'
             oci_title: Hardened Jellyfin
             oci_description: Jellyfin 10.11.11 with the awsec1 FFmpeg security fix for CVE-2026-8461
             oci_version: 10.11.11-awsec1
           - variant: pg17
+            arch: amd64
             dockerfile: images/pgsql/Dockerfile
-            image: ghcr.io/thystra/jellyfin-pgsql-hardened
-            tags: ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg17
             pgsql: 'true'
             pg_major: '17'
             oci_title: Hardened Jellyfin PostgreSQL
             oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 17 client tools
             oci_version: 10.11.11-awsec1-pg17
           - variant: pg18
+            arch: amd64
             dockerfile: images/pgsql/Dockerfile
-            image: ghcr.io/thystra/jellyfin-pgsql-hardened
-            tags: ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg18
+            pgsql: 'true'
+            pg_major: '18'
+            oci_title: Hardened Jellyfin PostgreSQL
+            oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 18 client tools
+            oci_version: 10.11.11-awsec1-pg18
+          - variant: stock
+            arch: arm64
+            dockerfile: images/stock/Dockerfile
+            pgsql: 'false'
+            pg_major: 'none'
+            oci_title: Hardened Jellyfin
+            oci_description: Jellyfin 10.11.11 with the awsec1 FFmpeg security fix for CVE-2026-8461
+            oci_version: 10.11.11-awsec1
+          - variant: pg17
+            arch: arm64
+            dockerfile: images/pgsql/Dockerfile
+            pgsql: 'true'
+            pg_major: '17'
+            oci_title: Hardened Jellyfin PostgreSQL
+            oci_description: Jellyfin 10.11.11 PostgreSQL derivative with the awsec1 FFmpeg security fix for CVE-2026-8461 and PostgreSQL 17 client tools
+            oci_version: 10.11.11-awsec1-pg17
+          - variant: pg18
+            arch: arm64
+            dockerfile: images/pgsql/Dockerfile
             pgsql: 'true'
             pg_major: '18'
             oci_title: Hardened Jellyfin PostgreSQL
@@ -58,6 +79,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -66,72 +92,74 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           load: true
           push: false
-          tags: local/hardened-jellyfin:${{ matrix.variant }}
+          tags: local/hardened-jellyfin:${{ matrix.variant }}-${{ matrix.arch }}
           build-args: |
             GIT_REVISION=${{ github.sha }}
             PG_MAJOR=${{ matrix.pg_major }}
             OCI_VERSION=${{ matrix.oci_version }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.arch }}
 
       - name: Qualify Jellyfin version
         env:
-          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}-${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euxo pipefail
-          docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version > /tmp/jellyfin-version 2>&1 || true
+          docker run --rm --platform "linux/${ARCH}" --entrypoint /jellyfin/jellyfin "$IMAGE" --version > /tmp/jellyfin-version 2>&1 || true
           cat /tmp/jellyfin-version
           grep -Fx 'Jellyfin.Server 10.11.11.0' /tmp/jellyfin-version
 
       - name: Qualify hardened FFmpeg
         env:
-          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}-${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euxo pipefail
-
-          docker run --rm --entrypoint /bin/sh "$IMAGE" -c '
+          docker run --rm --platform "linux/${ARCH}" --entrypoint /bin/sh "$IMAGE" -c "
             set -eu
-
             FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
-            test -x "$FFMPEG"
+            test -x \"\$FFMPEG\"
 
-            echo "===== PACKAGE ====="
-            dpkg-query -W -f="\${Package} \${Version} \${Architecture}\n" jellyfin-ffmpeg7
-            test "$(dpkg-query -W -f="\${Version}" jellyfin-ffmpeg7)" = "7.1.4-3+awsec1-trixie"
+            echo '===== PACKAGE ====='
+            dpkg-query -W -f='\${Package} \${Version} \${Architecture}\n' jellyfin-ffmpeg7
+            test \"\$(dpkg-query -W -f='\${Version}' jellyfin-ffmpeg7)\" = '7.1.4-3+awsec1-trixie'
+            test \"\$(dpkg-query -W -f='\${Architecture}' jellyfin-ffmpeg7)\" = '${ARCH}'
 
-            echo "===== VERSION ====="
-            "$FFMPEG" -version | head -1 | grep -F "7.1.4-Jellyfin"
+            echo '===== VERSION ====='
+            \"\$FFMPEG\" -version | head -1 | grep -F '7.1.4-Jellyfin'
 
-            echo "===== MAGICYUV ====="
-            if "$FFMPEG" -hide_banner -decoders 2>/dev/null | grep -qi magicyuv; then
-              echo "FAIL: MagicYUV decoder present"
+            echo '===== MAGICYUV ====='
+            if \"\$FFMPEG\" -hide_banner -decoders 2>/dev/null | grep -qi magicyuv; then
+              echo 'FAIL: MagicYUV decoder present'
               exit 1
             fi
-            echo "PASS: MagicYUV decoder absent"
+            echo 'PASS: MagicYUV decoder absent'
 
-            echo "===== HWACCELS ====="
-            HW="$($FFMPEG -hide_banner -hwaccels 2>/dev/null)"
-            printf "%s\n" "$HW"
-            for accel in cuda vaapi qsv drm opencl vulkan; do
-              printf "%s\n" "$HW" | grep -qx "$accel"
-            done
+            echo '===== HWACCELS ====='
+            HW=\"\$(\"\$FFMPEG\" -hide_banner -hwaccels 2>/dev/null)\"
+            printf '%s\n' \"\$HW\"
+            if [ '${ARCH}' = amd64 ]; then
+              for accel in cuda vaapi qsv drm opencl vulkan; do
+                printf '%s\n' \"\$HW\" | grep -qx \"\$accel\"
+              done
+            else
+              for accel in cuda drm opencl; do
+                printf '%s\n' \"\$HW\" | grep -qx \"\$accel\"
+              done
+              \"\$FFMPEG\" -hide_banner -decoders 2>/dev/null | grep -q h264_rkmpp
+            fi
 
-            echo "===== ENCODE TEST ====="
-            "$FFMPEG" \
-              -hide_banner \
-              -f lavfi \
-              -i "testsrc=size=320x180:rate=15" \
-              -t 1 \
-              -c:v libx264 \
-              -f null -
-          '
+            echo '===== ENCODE TEST ====='
+            \"\$FFMPEG\" -hide_banner -f lavfi -i 'testsrc=size=320x180:rate=15' -t 1 -c:v libx264 -f null -
+          "
 
       - name: Qualify OCI metadata
         env:
-          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}-${{ matrix.arch }}
           EXPECTED_SOURCE: https://github.com/thystra/jellyfin-security-images
           EXPECTED_DOCUMENTATION: https://github.com/thystra/jellyfin-security-images/blob/main/README.md
           EXPECTED_TITLE: ${{ matrix.oci_title }}
@@ -140,10 +168,8 @@ jobs:
           EXPECTED_REVISION: ${{ github.sha }}
         run: |
           set -euxo pipefail
-
           LABELS="$(docker image inspect "$IMAGE" | jq -c '.[0].Config.Labels')"
           printf '%s\n' "$LABELS" | jq .
-
           test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.source"')" = "$EXPECTED_SOURCE"
           test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.url"')" = "$EXPECTED_SOURCE"
           test "$(printf '%s' "$LABELS" | jq -r '."org.opencontainers.image.documentation"')" = "$EXPECTED_DOCUMENTATION"
@@ -155,11 +181,12 @@ jobs:
       - name: Qualify PostgreSQL client
         if: matrix.pgsql == 'true'
         env:
-          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}-${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}
           PG_MAJOR: ${{ matrix.pg_major }}
         run: |
           set -euxo pipefail
-          docker run --rm --entrypoint /bin/sh "$IMAGE" -c "
+          docker run --rm --platform "linux/${ARCH}" --entrypoint /bin/sh "$IMAGE" -c "
             set -eu
             test \"\$(command -v pg_dump)\" = \"/usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump\"
             test \"\$(command -v pg_restore)\" = \"/usr/lib/postgresql/${PG_MAJOR}/bin/pg_restore\"
@@ -172,13 +199,13 @@ jobs:
       - name: PostgreSQL dump and restore smoke test
         if: matrix.pgsql == 'true'
         env:
-          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
+          IMAGE: local/hardened-jellyfin:${{ matrix.variant }}-${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}
           PG_MAJOR: ${{ matrix.pg_major }}
         run: |
           set -euxo pipefail
-
-          NETWORK="pg-smoke-${{ matrix.variant }}-${{ github.run_id }}"
-          SERVER="pg-smoke-${{ matrix.variant }}-${{ github.run_id }}"
+          NETWORK="pg-smoke-${{ matrix.variant }}-${{ matrix.arch }}-${{ github.run_id }}"
+          SERVER="pg-smoke-${{ matrix.variant }}-${{ matrix.arch }}-${{ github.run_id }}"
           cleanup() {
             docker rm -f "$SERVER" >/dev/null 2>&1 || true
             docker network rm "$NETWORK" >/dev/null 2>&1 || true
@@ -186,54 +213,76 @@ jobs:
           trap cleanup EXIT
 
           docker network create "$NETWORK"
-          docker run -d \
-            --name "$SERVER" \
-            --network "$NETWORK" \
-            -e POSTGRES_PASSWORD=ci-password \
-            -e POSTGRES_DB=source_db \
-            "postgres:${PG_MAJOR}-bookworm"
-
+          docker run -d --name "$SERVER" --network "$NETWORK" -e POSTGRES_PASSWORD=ci-password -e POSTGRES_DB=source_db "postgres:${PG_MAJOR}-bookworm"
           for _ in $(seq 1 45); do
-            if docker exec "$SERVER" pg_isready -U postgres -d source_db; then
-              break
-            fi
+            if docker exec "$SERVER" pg_isready -U postgres -d source_db; then break; fi
             sleep 1
           done
           docker exec "$SERVER" pg_isready -U postgres -d source_db
-
           docker exec "$SERVER" psql -U postgres -d source_db -v ON_ERROR_STOP=1 \
             -c 'CREATE TABLE smoke_test (id integer PRIMARY KEY, value text NOT NULL);' \
             -c "INSERT INTO smoke_test VALUES (1, 'alpha'), (2, 'beta');"
 
-          docker run --rm \
-            --network "$NETWORK" \
-            --entrypoint /bin/sh \
-            -e PGPASSWORD=ci-password \
-            "$IMAGE" -c "
-              set -eux
-              pg_dump -h '$SERVER' -U postgres -d source_db -Fc -f /tmp/source.dump
-              createdb -h '$SERVER' -U postgres restored_db
-              pg_restore -h '$SERVER' -U postgres -d restored_db --exit-on-error /tmp/source.dump
-              test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT count(*) FROM smoke_test;')\" = 2
-              test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT value FROM smoke_test WHERE id=2;')\" = beta
-            "
+          docker run --rm --platform "linux/${ARCH}" --network "$NETWORK" --entrypoint /bin/sh -e PGPASSWORD=ci-password "$IMAGE" -c "
+            set -eux
+            pg_dump -h '$SERVER' -U postgres -d source_db -Fc -f /tmp/source.dump
+            createdb -h '$SERVER' -U postgres restored_db
+            pg_restore -h '$SERVER' -U postgres -d restored_db --exit-on-error /tmp/source.dump
+            test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT count(*) FROM smoke_test;')\" = 2
+            test \"\$(psql -h '$SERVER' -U postgres -d restored_db -Atc 'SELECT value FROM smoke_test WHERE id=2;')\" = beta
+          "
 
+  publish:
+    name: publish-${{ matrix.variant }}
+    needs: qualify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: stock
+            dockerfile: images/stock/Dockerfile
+            image: ghcr.io/thystra/jellyfin-hardened
+            tags: ghcr.io/thystra/jellyfin-hardened:10.11.11-awsec1
+            pg_major: 'none'
+            oci_version: 10.11.11-awsec1
+          - variant: pg17
+            dockerfile: images/pgsql/Dockerfile
+            image: ghcr.io/thystra/jellyfin-pgsql-hardened
+            tags: ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg17
+            pg_major: '17'
+            oci_version: 10.11.11-awsec1-pg17
+          - variant: pg18
+            dockerfile: images/pgsql/Dockerfile
+            image: ghcr.io/thystra/jellyfin-pgsql-hardened
+            tags: ghcr.io/thystra/jellyfin-pgsql-hardened:10.11.11-awsec1-pg18
+            pg_major: '18'
+            oci_version: 10.11.11-awsec1-pg18
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish qualified image
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      - name: Publish qualified multi-platform image
         id: publish
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ matrix.tags }}
           build-args: |
@@ -242,11 +291,11 @@ jobs:
             OCI_VERSION=${{ matrix.oci_version }}
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
-
+          cache-from: |
+            type=gha,scope=${{ matrix.variant }}-amd64
+            type=gha,scope=${{ matrix.variant }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-publish
       - name: Attest image provenance
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/attest-build-provenance@v3
         with:
           subject-name: ${{ matrix.image }}
