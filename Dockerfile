@@ -6,13 +6,20 @@ FROM ghcr.io/rogly-net/jellyfin-postgresql@sha256:944e277c10b4f0a5fc9748736a9e17
 
 USER root
 
-ARG FFMPEG_URL="https://github.com/thystra/jellyfin-ffmpeg/releases/download/v7.1.4-3-awsec1/jellyfin-ffmpeg7_7.1.4-3%2Bawsec1-trixie_amd64.deb"
-ARG FFMPEG_SHA256="625065a539e3209717a977e9aede107bf61c4e0fc16ba78b54dea12f8ac0329b"
+ARG TARGETARCH
+ARG FFMPEG_SHA256_AMD64="625065a539e3209717a977e9aede107bf61c4e0fc16ba78b54dea12f8ac0329b"
+ARG FFMPEG_SHA256_ARM64="7d64e9d56b7679a0c928306574382e4b97fe4b861c7ab44b03dceda0cb23341a"
 ARG GIT_REVISION="unknown"
 ARG PG_MAJOR="18"
 ARG OCI_VERSION="10.11.11-awsec1-pg18"
 
 RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) FFMPEG_SHA256="${FFMPEG_SHA256_AMD64}" ;; \
+      arm64) FFMPEG_SHA256="${FFMPEG_SHA256_ARM64}" ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    FFMPEG_URL="https://github.com/thystra/jellyfin-ffmpeg/releases/download/v7.1.4-3-awsec1/jellyfin-ffmpeg7_7.1.4-3%2Bawsec1-trixie_${TARGETARCH}.deb"; \
     case "${PG_MAJOR}" in 17|18) ;; *) echo "Unsupported PostgreSQL major: ${PG_MAJOR}" >&2; exit 1 ;; esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl "postgresql-client-${PG_MAJOR}"; \
