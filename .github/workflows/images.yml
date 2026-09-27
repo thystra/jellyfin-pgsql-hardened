@@ -82,7 +82,7 @@ jobs:
           IMAGE: local/hardened-jellyfin:${{ matrix.variant }}
         run: |
           set -euxo pipefail
-          docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version | tee /tmp/jellyfin-version
+          docker run --rm --entrypoint /jellyfin/jellyfin "$IMAGE" --version 2>&1 | tee /tmp/jellyfin-version
           grep -F '10.11.11' /tmp/jellyfin-version
 
       - name: Qualify hardened FFmpeg
